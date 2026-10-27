@@ -5,6 +5,11 @@ on:
 
 permissions: {}
 
+# One deploy at a time from CI; n8n also holds a Redis lock and answers 409 on overlap
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
 jobs:
   release-nightly:
     runs-on: ubuntu-latest
@@ -42,10 +47,11 @@ jobs:
       - name: Build frontend
         run: npm run build:frontend
 
-      # GHCR image names must be lowercase
+      # GHCR image names must be lowercase; n8n's Validate Payload only accepts lowercase ghcr.io/<org>/<app>
       - name: Set image name
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/dockge" >> "$GITHUB_ENV"
 
+      # The n8n workflow rejects "latest", so also tag with the full commit SHA
       - name: Build and push nightly image
         uses: docker/build-push-action@v6
         with:
@@ -54,4 +60,42 @@ jobs:
           target: nightly
           platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: true
-          tags: ${{ env.IMAGE }}:nightly
+          tags: |
+            ${{ env.IMAGE }}:nightly
+            ${{ env.IMAGE }}:${{ github.sha }}
+          # No attestation manifests, so each push is just an index + one manifest per platform
+          provenance: false
+          sbom: false
+
+      - name: Trigger n8n rolling deploy
+        env:
+          N8N_DEPLOY_URL: ${{ secrets.N8N_DEPLOY_URL }}
+          N8N_DEPLOY_HEADER: ${{ vars.N8N_DEPLOY_HEADER || 'X-Deploy-Token' }}
+          N8N_DEPLOY_TOKEN: ${{ secrets.N8N_DEPLOY_TOKEN }}
+          IMAGE_REF: ${{ env.IMAGE }}:${{ github.sha }}
+        run: |
+          body=$(jq -n --arg sha "$GITHUB_SHA" --arg image "$IMAGE_REF" '{sha: $sha, image: $image}')
+          code=$(curl -sS -o resp.json -w '%{http_code}' --max-time 30 \
+            -X POST "$N8N_DEPLOY_URL" \
+            -H 'Content-Type: application/json' \
+            -H "$N8N_DEPLOY_HEADER: $N8N_DEPLOY_TOKEN" \
+            -d "$body")
+          cat resp.json; echo
+          # 202 = accepted; the result of the rollout is reported to Discord by n8n
+          if [ "$code" != "202" ]; then
+            echo "::error::n8n returned HTTP $code"
+            exit 1
+          fi
+
+  # Keep the newest image versions in GHCR so older SHAs can still be rolled back to
+  cleanup-ghcr:
+    needs: release-nightly
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/delete-package-versions@v5
+        with:
+          package-name: dockge
+          package-type: container
+          min-versions-to-keep: 10
