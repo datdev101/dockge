@@ -10,25 +10,25 @@
                     <div class="col-md-3">
                         <div class="stat-item">
                             <div class="stat-label">{{ $t("images") }}</div>
-                            <div class="stat-value">{{ formatSize(diskUsage.Images?.[0]?.Size || 0) }}</div>
+                            <div class="stat-value">{{ diskUsage["Images"]?.Size || "0B" }}</div>
                         </div>
                     </div>
                     <div class="col-md-3">
                         <div class="stat-item">
                             <div class="stat-label">{{ $t("containers") }}</div>
-                            <div class="stat-value">{{ formatSize(diskUsage.Containers?.[0]?.Size || 0) }}</div>
+                            <div class="stat-value">{{ diskUsage["Containers"]?.Size || "0B" }}</div>
                         </div>
                     </div>
                     <div class="col-md-3">
                         <div class="stat-item">
                             <div class="stat-label">{{ $t("volumes") }}</div>
-                            <div class="stat-value">{{ formatSize(diskUsage.Volumes?.[0]?.Size || 0) }}</div>
+                            <div class="stat-value">{{ diskUsage["Local Volumes"]?.Size || "0B" }}</div>
                         </div>
                     </div>
                     <div class="col-md-3">
                         <div class="stat-item">
                             <div class="stat-label">{{ $t("buildCache") }}</div>
-                            <div class="stat-value">{{ formatSize(diskUsage.BuildCache?.[0]?.Size || 0) }}</div>
+                            <div class="stat-value">{{ diskUsage["Build Cache"]?.Size || "0B" }}</div>
                         </div>
                     </div>
                 </div>
@@ -97,7 +97,7 @@
                     <div
                         v-for="image in filteredImageList"
                         v-else
-                        :key="image.ID"
+                        :key="`${image.ID}-${image.Repository}:${image.Tag}`"
                         class="image-item"
                     >
                         <div class="image-info">
@@ -269,8 +269,13 @@ export default {
                 return;
             }
 
+            // Delete by repository:tag so only this tag is removed when the image has several tags;
+            // fall back to the ID for untagged (<none>) images
+            const { Repository, Tag, ID } = this.selectedImage;
+            const imageRef = (Repository !== "<none>" && Tag !== "<none>") ? `${Repository}:${Tag}` : ID;
+
             this.processing = true;
-            this.$root.emitAgent(this.endpoint, "deleteDockerImage", this.selectedImage.ID, (res) => {
+            this.$root.emitAgent(this.endpoint, "deleteDockerImage", imageRef, (res) => {
                 this.processing = false;
                 this.$root.toastRes(res);
 
@@ -345,21 +350,6 @@ export default {
                     this.loadDiskUsage();
                 }
             });
-        },
-
-        /**
-         * Format size in bytes to human readable format
-         * @param {number} bytes - Size in bytes
-         * @returns {string} Formatted size string
-         */
-        formatSize(bytes) {
-            if (!bytes) {
-                return "0 B";
-            }
-
-            const sizes = [ "B", "KB", "MB", "GB", "TB" ];
-            const i = Math.floor(Math.log(bytes) / Math.log(1024));
-            return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + " " + sizes[i];
         }
     }
 };

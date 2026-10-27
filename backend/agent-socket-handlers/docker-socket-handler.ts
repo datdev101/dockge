@@ -3,7 +3,7 @@ import { DockgeServer } from "../dockge-server";
 import { callbackError, callbackResult, checkLogin, DockgeSocket, ValidationError } from "../util-server";
 import { Stack } from "../stack";
 import { AgentSocket } from "../../common/agent-socket";
-import childProcessAsync from "promisify-child-process";
+import childProcessAsync, { ErrorWithOutput } from "promisify-child-process";
 
 export class DockerSocketHandler extends AgentSocketHandler {
     create(socket : DockgeSocket, server : DockgeServer, agentSocket : AgentSocket) {
@@ -487,7 +487,7 @@ export class DockerSocketHandler extends AgentSocketHandler {
 
     /**
      * Delete a Docker image by ID or name
-     * @param imageId - The image ID or name to delete
+     * @param imageId - The image ID, or repository:tag to remove a single tag of a multi-tagged image
      * @throws Error with Docker error message if deletion fails
      */
     async deleteDockerImage(imageId : string) {
@@ -495,20 +495,28 @@ export class DockerSocketHandler extends AgentSocketHandler {
             await childProcessAsync.spawn("docker", [ "rmi", imageId ], {
                 encoding: "utf-8",
             });
-        } catch (error : any) {
-            // Extract meaningful error message from Docker
-            const stderr = error.stderr?.toString() || "";
-            const stdout = error.stdout?.toString() || "";
-            const errorMessage = stderr || stdout || error.message || "Failed to delete image";
-
-            // Throw error with the actual Docker message
-            throw new Error(errorMessage);
+        } catch (error) {
+            throw new Error(this.getDockerErrorMessage(error, "Failed to delete image"));
         }
     }
 
     /**
+     * Extract a meaningful message from a failed docker command
+     * @param error - The error thrown by childProcessAsync.spawn
+     * @param fallback - Message to use when the error carries no output
+     * @returns stderr, stdout or the error message, whichever is present first
+     */
+    getDockerErrorMessage(error : unknown, fallback : string) : string {
+        if (!(error instanceof Error)) {
+            return fallback;
+        }
+        const { stderr, stdout } = error as ErrorWithOutput;
+        return stderr?.toString() || stdout?.toString() || error.message || fallback;
+    }
+
+    /**
      * Get Docker disk usage information
-     * @returns Docker disk usage statistics
+     * @returns Docker disk usage rows keyed by Type ("Images", "Containers", "Local Volumes", "Build Cache")
      */
     async getDockerDiskUsage() {
         const res = await childProcessAsync.spawn("docker", [ "system", "df", "--format", "json" ], {
@@ -524,7 +532,13 @@ export class DockerSocketHandler extends AgentSocketHandler {
             return {};
         }
 
-        return JSON.parse(output);
+        // docker system df --format json prints one JSON object per line
+        const diskUsage : Record<string, unknown> = {};
+        for (const line of output.split("\n")) {
+            const row = JSON.parse(line);
+            diskUsage[row.Type] = row;
+        }
+        return diskUsage;
     }
 
     /**
@@ -537,11 +551,8 @@ export class DockerSocketHandler extends AgentSocketHandler {
             await childProcessAsync.spawn("docker", [ "pull", imageName ], {
                 encoding: "utf-8",
             });
-        } catch (error : any) {
-            const stderr = error.stderr?.toString() || "";
-            const stdout = error.stdout?.toString() || "";
-            const errorMessage = stderr || stdout || error.message || "Failed to pull image";
-            throw new Error(errorMessage);
+        } catch (error) {
+            throw new Error(this.getDockerErrorMessage(error, "Failed to pull image"));
         }
     }
 
@@ -569,11 +580,8 @@ export class DockerSocketHandler extends AgentSocketHandler {
                 await childProcessAsync.spawn("docker", [ "build", "-t", imageName, tempDir ], {
                     encoding: "utf-8",
                 });
-            } catch (error : any) {
-                const stderr = error.stderr?.toString() || "";
-                const stdout = error.stdout?.toString() || "";
-                const errorMessage = stderr || stdout || error.message || "Failed to build image";
-                throw new Error(errorMessage);
+            } catch (error) {
+                throw new Error(this.getDockerErrorMessage(error, "Failed to build image"));
             }
         } finally {
             // Clean up temp directory
